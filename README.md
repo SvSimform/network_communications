@@ -20,30 +20,34 @@ A FastAPI application demonstrating Long Polling communication technique.
 
 ## 📋 Current Status
 
-### ✅ Implemented: Long Polling
+### ✅ Implemented
+**Long Polling:**
 - Efficient real-time communication with 83% fewer HTTP requests
 - Configurable timeout (1-60 seconds)
 - Background data simulation
 - Manual update triggers  
 - Statistics and monitoring
-- HTML demo client
+
+**Server-Sent Events (SSE):**
+- Real-time event streaming
+- Persistent connection with auto-reconnection
+- Event broadcasting to multiple clients
+- Custom event types and priorities
+- Connection management and statistics
 
 ### 🚧 Coming Next
-- Server-Sent Events (SSE)
 - MQTT integration
 - WebSocket implementation
 - Socket.IO integration
 
-## 🎯 Demo Long Polling
+## 🎯 API Testing
 
-**See [LONG_POLLING_DEMO.md](LONG_POLLING_DEMO.md) for step-by-step demo guide**
+**See [LONG_POLLING_DEMO.md](LONG_POLLING_DEMO.md) for Long Polling demo**
+**See [SSE_DEMO.md](SSE_DEMO.md) for Server-Sent Events demo**
 
-### Quick Test Commands:
+### Long Polling Test Commands:
 
 ```bash
-# Check application
-curl http://localhost:8000
-
 # Start long polling (Terminal 1)
 curl "http://localhost:8000/api/v1/poll?last_update_id=0&timeout=30"
 
@@ -54,15 +58,36 @@ curl -X POST "http://localhost:8000/api/v1/poll/trigger?update_type=test&message
 curl http://localhost:8000/api/v1/poll/stats
 ```
 
-### HTML Demo:
-Open `long_polling_demo.html` in your browser for interactive testing.
+### Server-Sent Events Test Commands:
+
+```bash
+# Connect to SSE stream (Terminal 1)
+curl -N -H "Accept: text/event-stream" http://localhost:8000/api/v1/sse/stream
+
+# Send broadcast message (Terminal 2)
+curl -X POST "http://localhost:8000/api/v1/sse/broadcast?message=Hello%20SSE&event_type=test"
+
+# Trigger demo update
+curl -X POST "http://localhost:8000/api/v1/sse/trigger?update_type=demo&message=Test%20update"
+
+# Get SSE statistics
+curl http://localhost:8000/api/v1/sse/stats
+```
 
 ## 🏗 Architecture
 
+### Long Polling Flow:
 ```
 Client Request ──► Server holds connection ──► Response when data available
      │                                              │
      └──────── Reduced HTTP requests ──────────────┘
+```
+
+### Server-Sent Events Flow:
+```
+Client ──► EventSource ──► Persistent HTTP stream ──► Real-time events
+   │                                                       │
+   └──────── Single connection, multiple events ──────────┘
 ```
 
 ## 🔧 Configuration
