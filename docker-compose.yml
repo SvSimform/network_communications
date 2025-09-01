@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # FastAPI Application
+  fastapi-demo:
+    build: .
+    container_name: communication-demo
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - MQTT_BROKER_HOST=mqtt-broker
+      - MQTT_BROKER_PORT=1883
+    depends_on:
+      - mqtt-broker
+    volumes:
+      - .:/app
+    networks:
+      - demo-network
+    restart: unless-stopped
+
+  # MQTT Broker (Eclipse Mosquitto)
+  mqtt-broker:
+    image: eclipse-mosquitto:2.0
+    container_name: mqtt-broker
+    ports:
+      - "1883:1883"  # MQTT port
+      - "9001:9001"  # WebSocket port
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - demo-network
+    restart: unless-stopped
+
+networks:
+  demo-network:
+    driver: bridge
+
+volumes:
+  mqtt-data:
+  mqtt-logs:
