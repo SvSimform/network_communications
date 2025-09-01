@@ -1,137 +1,73 @@
 # Communication Techniques Demo
 
-A comprehensive FastAPI application demonstrating various real-time communication techniques including Long Polling, Server-Sent Events (SSE), MQTT, WebSocket, and Socket.IO.
+A FastAPI application demonstrating Long Polling communication technique.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Docker & Docker Compose
-- Git
 
 ### Running the Application
 
-1. **Clone and navigate to the project:**
+1. **Start the application:**
    ```bash
-   git clone <repository-url>
-   cd HTTP_vs_LongPull_vs_Websocket_vs_socketIo
+   docker compose up --build -d
    ```
 
-2. **Start the application with Docker Compose:**
-   ```bash
-   docker-compose up --build
-   ```
-
-3. **Access the application:**
+2. **Access the application:**
    - FastAPI App: http://localhost:8000
    - API Documentation: http://localhost:8000/docs
-   - MQTT Broker: localhost:1883
 
-### Development Mode
+## 📋 Current Status
 
-For local development without Docker:
+### ✅ Implemented: Long Polling
+- Efficient real-time communication with 83% fewer HTTP requests
+- Configurable timeout (1-60 seconds)
+- Background data simulation
+- Manual update triggers  
+- Statistics and monitoring
+- HTML demo client
+
+### 🚧 Coming Next
+- Server-Sent Events (SSE)
+- MQTT integration
+- WebSocket implementation
+- Socket.IO integration
+
+## 🎯 Demo Long Polling
+
+**See [LONG_POLLING_DEMO.md](LONG_POLLING_DEMO.md) for step-by-step demo guide**
+
+### Quick Test Commands:
+
 ```bash
-pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# Check application
+curl http://localhost:8000
+
+# Start long polling (Terminal 1)
+curl "http://localhost:8000/api/v1/poll?last_update_id=0&timeout=30"
+
+# Trigger update (Terminal 2) 
+curl -X POST "http://localhost:8000/api/v1/poll/trigger?update_type=test&message=Hello!"
+
+# View statistics
+curl http://localhost:8000/api/v1/poll/stats
 ```
 
-## 📋 Project Status
+### HTML Demo:
+Open `long_polling_demo.html` in your browser for interactive testing.
 
-### ✅ Completed Features
-- [x] **Phase 1**: Project setup + Dockerization
-  - FastAPI base application
-  - Docker containerization
-  - MQTT broker setup
-  - Development environment
-
-### 🚧 Upcoming Features
-- [ ] **Phase 2**: Long Polling implementation
-- [ ] **Phase 3**: Server-Sent Events (SSE)
-- [ ] **Phase 4**: MQTT integration
-- [ ] **Phase 5**: WebSocket implementation
-- [ ] **Phase 6**: Socket.IO integration
-
-## 🛠 Architecture
+## 🏗 Architecture
 
 ```
-┌─────────────────┐    ┌─────────────────┐
-│   FastAPI App   │    │   MQTT Broker   │
-│   (Port 8000)   │    │   (Port 1883)   │
-└─────────────────┘    └─────────────────┘
-         │                       │
-         └───────────────────────┘
-              Docker Network
-```
-
-## 📚 API Documentation
-
-### Base Endpoints
-
-#### Root Information
-- **Method**: GET
-- **Endpoint**: `/`
-- **Objective**: Get application information and available techniques
-- **Response**:
-```json
-{
-  "message": "FastAPI Communication Techniques Demo",
-  "version": "1.0.0",
-  "available_techniques": [
-    "Long Polling",
-    "Server-Sent Events (SSE)",
-    "MQTT",
-    "WebSocket", 
-    "Socket.IO"
-  ],
-  "status": "ready"
-}
-```
-
-#### Health Check
-- **Method**: GET
-- **Endpoint**: `/health`
-- **Objective**: Verify application health status
-- **Response**:
-```json
-{
-  "status": "healthy",
-  "timestamp": "2025-09-01T10:00:00Z"
-}
-```
-
-## 🧪 Testing
-
-Test the base setup:
-```bash
-# Test root endpoint
-curl http://localhost:8000/
-
-# Test health check
-curl http://localhost:8000/health
-
-# Access interactive API docs
-open http://localhost:8000/docs
+Client Request ──► Server holds connection ──► Response when data available
+     │                                              │
+     └──────── Reduced HTTP requests ──────────────┘
 ```
 
 ## 🔧 Configuration
 
-### Environment Variables
-- `MQTT_BROKER_HOST`: MQTT broker hostname (default: mqtt-broker)
-- `MQTT_BROKER_PORT`: MQTT broker port (default: 1883)
-
-### MQTT Configuration
-- **Broker**: Eclipse Mosquitto
-- **MQTT Port**: 1883
-- **WebSocket Port**: 9001
-- **Anonymous Access**: Enabled (for demo purposes)
-
-## 📝 Development Notes
-
-- Exception handling implemented across all endpoints
-- CORS enabled for development
-- Structured logging configured
-- Mock data used (no database required)
-- Docker health checks included
-
----
-
-**Next Phase**: Long Polling implementation will be added with dedicated endpoints and real-time data simulation.
+- **Timeout**: 1-60 seconds (default: 30)
+- **Background Updates**: Every 5-15 seconds
+- **Update History**: Last 50 updates kept
+- **CORS**: Enabled for browser testing
