@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Long Polling Demo</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #fafafa;
+        }
+
+        .section h3 {
+            margin-top: 0;
+            color: #555;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #0056b3;
+        }
+
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background-color: #545b62;
+        }
+
+        .btn-success {
+            background-color: #28a745;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background-color: #1e7e34;
+        }
+
+        .btn-danger {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background-color: #c82333;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.polling {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .logs {
+            height: 300px;
+            overflow-y: auto;
+            background: #2c3e50;
+            color: #ecf0f1;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #34495e;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 2px 0;
+        }
+
+        .log-timestamp {
+            color: #95a5a6;
+        }
+
+        .log-success {
+            color: #2ecc71;
+        }
+
+        .log-error {
+            color: #e74c3c;
+        }
+
+        .log-info {
+            color: #3498db;
+        }
+
+        .log-warning {
+            color: #f39c12;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+
+        input,
+        select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔄 Long Polling Demo</h1>
+
+        <div class="section">
+            <h3>📊 Connection Status</h3>
+            <div id="status" class="status disconnected">Disconnected</div>
+
+            <div class="controls">
+                <button id="startPolling" class="btn-primary">Start Polling</button>
+                <button id="stopPolling" class="btn-danger" disabled>Stop Polling</button>
+                <button id="getStats" class="btn-secondary">Get Stats</button>
+                <button id="clearLogs" class="btn-secondary">Clear Logs</button>
+            </div>
+
+            <div>
+                <label>Timeout (seconds): </label>
+                <input type="number" id="timeout" value="30" min="1" max="60">
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>🎯 Manual Updates</h3>
+            <div class="controls">
+                <input type="text" id="updateType" placeholder="Update type" value="manual">
+                <input type="text" id="updateMessage" placeholder="Update message" value="Test update from browser">
+                <button id="triggerUpdate" class="btn-success">Trigger Update</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>📈 Statistics</h3>
+            <div id="stats" class="stats">
+                <div class="stat-card">
+                    <div class="stat-value" id="totalUpdates">0</div>
+                    <div class="stat-label">Total Updates</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="activeSessions">0</div>
+                    <div class="stat-label">Active Sessions</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="updateCounter">0</div>
+                    <div class="stat-label">Update Counter</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="pollCount">0</div>
+                    <div class="stat-label">Poll Count</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>📝 Event Logs</h3>
+            <div id="logs" class="logs"></div>
+        </div>
+    </div>
+
+    <script>
+        class LongPollingClient {
+            constructor() {
+                this.baseUrl = 'http://localhost:8000';
+                this.isPolling = false;
+                this.lastUpdateId = 0;
+                this.pollCount = 0;
+                this.abortController = null;
+            }
+
+            log(message, type = 'info') {
+                const logs = document.getElementById('logs');
+                const timestamp = new Date().toLocaleTimeString();
+                const logEntry = document.createElement('div');
+                logEntry.className = 'log-entry';
+                logEntry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span> <span class="log-${type}">${message}</span>`;
+                logs.appendChild(logEntry);
+                logs.scrollTop = logs.scrollHeight;
+            }
+
+            updateStatus(status, className) {
+                const statusEl = document.getElementById('status');
+                statusEl.textContent = status;
+                statusEl.className = `status ${className}`;
+            }
+
+            async startPolling() {
+                if (this.isPolling) return;
+
+                this.isPolling = true;
+                this.updateStatus('Polling...', 'polling');
+                this.log('🚀 Starting long polling', 'success');
+
+                document.getElementById('startPolling').disabled = true;
+                document.getElementById('stopPolling').disabled = false;
+
+                while (this.isPolling) {
+                    try {
+                        this.abortController = new AbortController();
+                        const timeout = parseInt(document.getElementById('timeout').value) || 30;
+                        this.pollCount++;
+                        document.getElementById('pollCount').textContent = this.pollCount;
+
+                        this.log(`📡 Poll #${this.pollCount} - Waiting for updates (last_id: ${this.lastUpdateId}, timeout: ${timeout}s)`, 'info');
+
+                        const response = await fetch(`${this.baseUrl}/api/v1/poll?last_update_id=${this.lastUpdateId}&timeout=${timeout}`, {
+                            signal: this.abortController.signal
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+
+                            if (data.success) {
+                                const updates = data.updates || [];
+                                const pollingTime = data.polling_time || 0;
+
+                                if (updates.length > 0) {
+                                    this.log(`✅ Received ${updates.length} update(s) in ${pollingTime.toFixed(2)}s`, 'success');
+                                    updates.forEach(update => {
+                                        this.log(`   📝 Update #${update.id}: ${JSON.stringify(update.data)}`, 'info');
+                                    });
+                                    this.lastUpdateId = data.last_update_id;
+                                } else {
+                                    if (data.timeout) {
+                                        this.log(`⏰ Timeout after ${timeout}s - no new updates`, 'warning');
+                                    } else {
+                                        this.log('📭 No new updates available', 'info');
+                                    }
+                                }
+                            } else {
+                                this.log(`❌ Error: ${data.error || 'Unknown error'}`, 'error');
+                            }
+                        } else {
+                            this.log(`❌ HTTP Error: ${response.status}`, 'error');
+                        }
+
+                    } catch (error) {
+                        if (error.name === 'AbortError') {
+                            this.log('🛑 Polling cancelled', 'warning');
+                        } else {
+                            this.log(`❌ Error: ${error.message}`, 'error');
+                            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s before retry
+                        }
+                    }
+                }
+            }
+
+            stopPolling() {
+                this.isPolling = false;
+                if (this.abortController) {
+                    this.abortController.abort();
+                }
+                this.updateStatus('Disconnected', 'disconnected');
+                this.log('🛑 Polling stopped', 'warning');
+
+                document.getElementById('startPolling').disabled = false;
+                document.getElementById('stopPolling').disabled = true;
+            }
+
+            async triggerUpdate() {
+                try {
+                    const updateType = document.getElementById('updateType').value || 'manual';
+                    const updateMessage = document.getElementById('updateMessage').value || 'Test update';
+
+                    const response = await fetch(`${this.baseUrl}/api/v1/poll/trigger?update_type=${encodeURIComponent(updateType)}&message=${encodeURIComponent(updateMessage)}`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.log(`✅ Update triggered: #${data.update_id} - ${updateMessage}`, 'success');
+                    } else {
+                        this.log(`❌ Failed to trigger update: HTTP ${response.status}`, 'error');
+                    }
+                } catch (error) {
+                    this.log(`❌ Error triggering update: ${error.message}`, 'error');
+                }
+            }
+
+            async getStats() {
+                try {
+                    const response = await fetch(`${this.baseUrl}/api/v1/poll/stats`);
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const stats = data.stats || {};
+
+                        document.getElementById('totalUpdates').textContent = stats.total_updates || 0;
+                        document.getElementById('activeSessions').textContent = stats.active_sessions || 0;
+                        document.getElementById('updateCounter').textContent = stats.update_counter || 0;
+
+                        this.log('📊 Statistics updated', 'info');
+                    } else {
+                        this.log(`❌ Failed to get stats: HTTP ${response.status}`, 'error');
+                    }
+                } catch (error) {
+                    this.log(`❌ Error getting stats: ${error.message}`, 'error');
+                }
+            }
+
+            clearLogs() {
+                document.getElementById('logs').innerHTML = '';
+                this.log('🧹 Logs cleared', 'info');
+            }
+        }
+
+        // Initialize client
+        const client = new LongPollingClient();
+
+        // Event listeners
+        document.getElementById('startPolling').addEventListener('click', () => client.startPolling());
+        document.getElementById('stopPolling').addEventListener('click', () => client.stopPolling());
+        document.getElementById('triggerUpdate').addEventListener('click', () => client.triggerUpdate());
+        document.getElementById('getStats').addEventListener('click', () => client.getStats());
+        document.getElementById('clearLogs').addEventListener('click', () => client.clearLogs());
+
+        // Auto-update stats every 10 seconds
+        setInterval(() => {
+            if (client.isPolling) {
+                client.getStats();
+            }
+        }, 10000);
+
+        // Initial log
+        client.log('🌟 Long Polling Demo Client Ready', 'success');
+        client.getStats();
+    </script>
+</body>
+
+</html>

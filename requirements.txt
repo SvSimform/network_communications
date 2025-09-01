@@ -5,3 +5,4 @@ aiofiles==23.2.1
 paho-mqtt==1.6.1
 python-multipart==0.0.6
 websockets==12.0
+aiohttp==3.9.1
