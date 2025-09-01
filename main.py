@@ -16,6 +16,9 @@ from typing import Optional, Dict, Any, AsyncGenerator
 import random
 import uuid
 import json
+import os
+import paho.mqtt.client as mqtt
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +32,9 @@ async def lifespan(app: FastAPI):
     # Start background task for simulating updates
     update_task = asyncio.create_task(simulate_data_updates())
     
+    # Initialize MQTT connection
+    mqtt_manager.connect()
+    
     yield
     
     # Clean up
@@ -37,6 +43,9 @@ async def lifespan(app: FastAPI):
         await update_task
     except asyncio.CancelledError:
         pass
+    
+    # Disconnect MQTT
+    mqtt_manager.disconnect()
     
     logger.info("🔥 FastAPI Communication Demo Shutting down...")
 
@@ -284,6 +293,245 @@ class SSEManager:
 # Initialize SSE manager
 sse_manager = SSEManager()
 
+# MQTT Manager for Pub/Sub messaging
+class MQTTManager:
+    def __init__(self):
+        self.broker_host = os.getenv("MQTT_BROKER_HOST", "localhost")
+        self.broker_port = int(os.getenv("MQTT_BROKER_PORT", "1883"))
+        self.client = None
+        self.is_connected = False
+        self.subscribers = {}
+        self.published_messages = []
+        self.message_counter = 0
+        self.topics_stats = {}
+        
+    def on_connect(self, client, userdata, flags, rc):
+        """Callback for MQTT connection"""
+        try:
+            if rc == 0:
+                self.is_connected = True
+                logger.info(f"🔗 MQTT connected to {self.broker_host}:{self.broker_port}")
+                
+                # Subscribe to demo topics
+                demo_topics = [
+                    "demo/updates",
+                    "demo/notifications", 
+                    "demo/alerts",
+                    "demo/chat",
+                    "demo/system"
+                ]
+                
+                for topic in demo_topics:
+                    client.subscribe(topic)
+                    self.topics_stats[topic] = {"subscribed": True, "message_count": 0}
+                    logger.info(f"📡 Subscribed to topic: {topic}")
+                    
+            else:
+                logger.error(f"❌ MQTT connection failed with code {rc}")
+                self.is_connected = False
+        except Exception as e:
+            logger.error(f"Error in MQTT on_connect: {str(e)}")
+    
+    def on_disconnect(self, client, userdata, rc):
+        """Callback for MQTT disconnection"""
+        self.is_connected = False
+        logger.warning(f"🔌 MQTT disconnected with code {rc}")
+    
+    def on_message(self, client, userdata, msg):
+        """Callback for received MQTT messages"""
+        try:
+            topic = msg.topic
+            payload = msg.payload.decode('utf-8')
+            
+            # Update topic statistics
+            if topic in self.topics_stats:
+                self.topics_stats[topic]["message_count"] += 1
+            
+            message_data = {
+                "topic": topic,
+                "payload": payload,
+                "timestamp": datetime.now().isoformat(),
+                "qos": msg.qos,
+                "retain": msg.retain
+            }
+            
+            logger.info(f"📨 MQTT message received on {topic}: {payload}")
+            
+            # Store message for retrieval
+            self.message_counter += 1
+            stored_message = {
+                "id": self.message_counter,
+                "data": message_data,
+                "received_at": time.time()
+            }
+            
+            self.published_messages.append(stored_message)
+            
+            # Keep only last 100 messages
+            if len(self.published_messages) > 100:
+                self.published_messages = self.published_messages[-100:]
+            
+            # Forward to other communication channels for cross-system demo
+            asyncio.create_task(self._forward_to_other_systems(message_data))
+            
+        except Exception as e:
+            logger.error(f"Error processing MQTT message: {str(e)}")
+    
+    async def _forward_to_other_systems(self, mqtt_message):
+        """Forward MQTT messages to Long Polling and SSE for demonstration"""
+        try:
+            forward_data = {
+                "type": "mqtt_message",
+                "mqtt_topic": mqtt_message["topic"],
+                "mqtt_payload": mqtt_message["payload"],
+                "source": "mqtt",
+                "timestamp": mqtt_message["timestamp"]
+            }
+            
+            # Send to Long Polling
+            await polling_manager.add_update(forward_data)
+            
+            # Send to SSE
+            await sse_manager.broadcast_message(forward_data, "mqtt_message")
+            
+        except Exception as e:
+            logger.error(f"Error forwarding MQTT message: {str(e)}")
+    
+    def connect(self):
+        """Connect to MQTT broker"""
+        try:
+            if self.client is None:
+                self.client = mqtt.Client()
+                self.client.on_connect = self.on_connect
+                self.client.on_disconnect = self.on_disconnect
+                self.client.on_message = self.on_message
+            
+            if not self.is_connected:
+                logger.info(f"🔄 Connecting to MQTT broker at {self.broker_host}:{self.broker_port}")
+                self.client.connect(self.broker_host, self.broker_port, 60)
+                self.client.loop_start()
+                
+        except Exception as e:
+            logger.error(f"Error connecting to MQTT: {str(e)}")
+            self.is_connected = False
+    
+    def disconnect(self):
+        """Disconnect from MQTT broker"""
+        try:
+            if self.client and self.is_connected:
+                self.client.loop_stop()
+                self.client.disconnect()
+                self.is_connected = False
+                logger.info("🔌 MQTT disconnected")
+        except Exception as e:
+            logger.error(f"Error disconnecting MQTT: {str(e)}")
+    
+    def publish_message(self, topic: str, payload: str, qos: int = 0, retain: bool = False):
+        """Publish message to MQTT topic"""
+        try:
+            if not self.is_connected:
+                self.connect()
+                # Wait a moment for connection
+                time.sleep(1)
+            
+            if self.is_connected:
+                result = self.client.publish(topic, payload, qos, retain)
+                
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    logger.info(f"📤 MQTT message published to {topic}: {payload}")
+                    
+                    # Store published message
+                    self.message_counter += 1
+                    published_msg = {
+                        "id": self.message_counter,
+                        "type": "published",
+                        "topic": topic,
+                        "payload": payload,
+                        "qos": qos,
+                        "retain": retain,
+                        "timestamp": datetime.now().isoformat(),
+                        "published_at": time.time()
+                    }
+                    
+                    self.published_messages.append(published_msg)
+                    
+                    return True
+                else:
+                    logger.error(f"❌ Failed to publish MQTT message: {result.rc}")
+                    return False
+            else:
+                logger.error("❌ MQTT not connected, cannot publish")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error publishing MQTT message: {str(e)}")
+            return False
+    
+    def subscribe_to_topic(self, topic: str, qos: int = 0):
+        """Subscribe to MQTT topic"""
+        try:
+            if not self.is_connected:
+                self.connect()
+                time.sleep(1)
+            
+            if self.is_connected:
+                result = self.client.subscribe(topic, qos)
+                
+                if result[0] == mqtt.MQTT_ERR_SUCCESS:
+                    self.topics_stats[topic] = {"subscribed": True, "message_count": 0}
+                    logger.info(f"📡 Subscribed to MQTT topic: {topic}")
+                    return True
+                else:
+                    logger.error(f"❌ Failed to subscribe to topic {topic}: {result[0]}")
+                    return False
+            else:
+                logger.error("❌ MQTT not connected, cannot subscribe")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error subscribing to MQTT topic: {str(e)}")
+            return False
+    
+    def unsubscribe_from_topic(self, topic: str):
+        """Unsubscribe from MQTT topic"""
+        try:
+            if self.is_connected:
+                result = self.client.unsubscribe(topic)
+                
+                if result[0] == mqtt.MQTT_ERR_SUCCESS:
+                    if topic in self.topics_stats:
+                        self.topics_stats[topic]["subscribed"] = False
+                    logger.info(f"📡 Unsubscribed from MQTT topic: {topic}")
+                    return True
+                else:
+                    logger.error(f"❌ Failed to unsubscribe from topic {topic}: {result[0]}")
+                    return False
+            else:
+                logger.error("❌ MQTT not connected, cannot unsubscribe")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error unsubscribing from MQTT topic: {str(e)}")
+            return False
+    
+    def get_stats(self):
+        """Get MQTT statistics"""
+        try:
+            return {
+                "connected": self.is_connected,
+                "broker": f"{self.broker_host}:{self.broker_port}",
+                "total_messages": len(self.published_messages),
+                "message_counter": self.message_counter,
+                "topics": self.topics_stats,
+                "recent_messages": self.published_messages[-10:] if self.published_messages else []
+            }
+        except Exception as e:
+            logger.error(f"Error getting MQTT stats: {str(e)}")
+            return {"error": str(e)}
+
+# Initialize MQTT manager
+mqtt_manager = MQTTManager()
+
 async def simulate_data_updates():
     """Background task to simulate periodic data updates"""
     sample_updates = [
@@ -295,6 +543,8 @@ async def simulate_data_updates():
         {"type": "system_alert", "message": "Scheduled maintenance in 1 hour"},
     ]
     
+    mqtt_topics = ["demo/updates", "demo/notifications", "demo/alerts", "demo/chat", "demo/system"]
+    
     while True:
         try:
             # Random delay between 5-15 seconds
@@ -304,9 +554,14 @@ async def simulate_data_updates():
             update = random.choice(sample_updates).copy()
             update["timestamp"] = datetime.now().isoformat()
             
-            # Send to both Long Polling and SSE
+            # Send to Long Polling and SSE
             await polling_manager.add_update(update)
             await sse_manager.broadcast_message(update, "data_update")
+            
+            # Send to MQTT (publish to random topic)
+            mqtt_topic = random.choice(mqtt_topics)
+            mqtt_payload = json.dumps(update)
+            mqtt_manager.publish_message(mqtt_topic, mqtt_payload)
             
         except Exception as e:
             logger.error(f"Error in background updates: {str(e)}")
@@ -340,7 +595,8 @@ async def health_check():
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "polling_stats": polling_manager.get_stats(),
-            "sse_stats": sse_manager.get_stats()
+            "sse_stats": sse_manager.get_stats(),
+            "mqtt_stats": mqtt_manager.get_stats()
         }
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
@@ -640,6 +896,286 @@ async def trigger_sse_update(
     except Exception as e:
         logger.error(f"Error triggering SSE update: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to trigger SSE update: {str(e)}")
+
+# =============== MQTT ENDPOINTS ===============
+
+@app.post("/api/v1/mqtt/publish")
+async def mqtt_publish(
+    topic: str = Query(..., description="MQTT topic to publish to"),
+    message: str = Query(..., description="Message payload"),
+    qos: int = Query(0, ge=0, le=2, description="Quality of Service level (0, 1, or 2)"),
+    retain: bool = Query(False, description="Retain message flag")
+):
+    """
+    Publish Message to MQTT Topic
+    
+    **Objective**: Send messages to MQTT broker for pub/sub communication pattern.
+    
+    **How it works**:
+    - Publishes message to specified MQTT topic
+    - Uses configurable QoS (Quality of Service) levels
+    - Supports message retention
+    - Cross-system integration with Long Polling and SSE
+    
+    **Parameters**:
+    - topic: MQTT topic name (e.g., "demo/notifications")
+    - message: Message payload to publish
+    - qos: Quality of Service (0=at most once, 1=at least once, 2=exactly once)
+    - retain: Whether broker should retain this message for new subscribers
+    
+    **Response**:
+    - success: Boolean indicating if message was published
+    - topic: Topic where message was published
+    - message_id: Unique identifier for the message
+    """
+    try:
+        success = mqtt_manager.publish_message(topic, message, qos, retain)
+        
+        if success:
+            # Also broadcast to other systems for cross-communication demo
+            broadcast_data = {
+                "type": "mqtt_publish",
+                "topic": topic,
+                "message": message,
+                "qos": qos,
+                "retain": retain,
+                "published_by": "api",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            await polling_manager.add_update(broadcast_data)
+            await sse_manager.broadcast_message(broadcast_data, "mqtt_publish")
+            
+            return {
+                "success": True,
+                "topic": topic,
+                "message": message,
+                "qos": qos,
+                "retain": retain,
+                "message_id": mqtt_manager.message_counter,
+                "broker": f"{mqtt_manager.broker_host}:{mqtt_manager.broker_port}"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to publish MQTT message")
+            
+    except Exception as e:
+        logger.error(f"Error publishing MQTT message: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to publish MQTT message: {str(e)}")
+
+@app.post("/api/v1/mqtt/subscribe")
+async def mqtt_subscribe(
+    topic: str = Query(..., description="MQTT topic to subscribe to"),
+    qos: int = Query(0, ge=0, le=2, description="Quality of Service level")
+):
+    """
+    Subscribe to MQTT Topic
+    
+    **Objective**: Subscribe to MQTT topics for receiving messages.
+    
+    **Parameters**:
+    - topic: MQTT topic pattern to subscribe to (supports wildcards + and #)
+    - qos: Maximum Quality of Service level for subscription
+    
+    **Response**:
+    - success: Boolean indicating if subscription was successful
+    - topic: Topic pattern subscribed to
+    - qos: QoS level for the subscription
+    """
+    try:
+        success = mqtt_manager.subscribe_to_topic(topic, qos)
+        
+        if success:
+            return {
+                "success": True,
+                "topic": topic,
+                "qos": qos,
+                "message": f"Successfully subscribed to topic: {topic}",
+                "broker": f"{mqtt_manager.broker_host}:{mqtt_manager.broker_port}"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to subscribe to MQTT topic")
+            
+    except Exception as e:
+        logger.error(f"Error subscribing to MQTT topic: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to subscribe to MQTT topic: {str(e)}")
+
+@app.post("/api/v1/mqtt/unsubscribe")
+async def mqtt_unsubscribe(
+    topic: str = Query(..., description="MQTT topic to unsubscribe from")
+):
+    """
+    Unsubscribe from MQTT Topic
+    
+    **Objective**: Unsubscribe from MQTT topics to stop receiving messages.
+    
+    **Parameters**:
+    - topic: MQTT topic pattern to unsubscribe from
+    
+    **Response**:
+    - success: Boolean indicating if unsubscription was successful
+    - topic: Topic pattern unsubscribed from
+    """
+    try:
+        success = mqtt_manager.unsubscribe_from_topic(topic)
+        
+        if success:
+            return {
+                "success": True,
+                "topic": topic,
+                "message": f"Successfully unsubscribed from topic: {topic}",
+                "broker": f"{mqtt_manager.broker_host}:{mqtt_manager.broker_port}"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to unsubscribe from MQTT topic")
+            
+    except Exception as e:
+        logger.error(f"Error unsubscribing from MQTT topic: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to unsubscribe from MQTT topic: {str(e)}")
+
+@app.get("/api/v1/mqtt/stats")
+async def get_mqtt_stats():
+    """
+    Get MQTT Statistics
+    
+    **Objective**: Monitor MQTT system performance, connections, and message flow.
+    
+    **Response**:
+    - connected: Boolean indicating if connected to MQTT broker
+    - broker: Broker host and port information
+    - total_messages: Total number of messages processed
+    - topics: Statistics for each subscribed topic
+    - recent_messages: Last 10 messages (published and received)
+    """
+    try:
+        stats = mqtt_manager.get_stats()
+        return {
+            "success": True,
+            "stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting MQTT stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get MQTT stats: {str(e)}")
+
+@app.get("/api/v1/mqtt/messages")
+async def get_mqtt_messages(
+    limit: int = Query(20, ge=1, le=100, description="Number of recent messages to return"),
+    topic_filter: Optional[str] = Query(None, description="Filter messages by topic")
+):
+    """
+    Get Recent MQTT Messages
+    
+    **Objective**: Retrieve recent MQTT messages for debugging and monitoring.
+    
+    **Parameters**:
+    - limit: Maximum number of messages to return (1-100, default: 20)
+    - topic_filter: Optional topic filter to show messages from specific topic
+    
+    **Response**:
+    - success: Boolean indicating success
+    - messages: Array of recent MQTT messages
+    - total_messages: Total number of messages in the system
+    """
+    try:
+        messages = mqtt_manager.published_messages
+        
+        # Filter by topic if specified
+        if topic_filter:
+            messages = [msg for msg in messages 
+                       if msg.get("topic", "").startswith(topic_filter) or 
+                          (msg.get("data", {}).get("topic", "")).startswith(topic_filter)]
+        
+        # Apply limit
+        recent_messages = messages[-limit:] if messages else []
+        
+        return {
+            "success": True,
+            "messages": recent_messages,
+            "total_messages": len(mqtt_manager.published_messages),
+            "requested_limit": limit,
+            "topic_filter": topic_filter,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting MQTT messages: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get MQTT messages: {str(e)}")
+
+@app.post("/api/v1/mqtt/demo")
+async def mqtt_demo_message(
+    demo_type: str = Query("notification", description="Type of demo message"),
+    message: str = Query("MQTT demo message", description="Demo message content")
+):
+    """
+    Send Demo MQTT Message
+    
+    **Objective**: Send demonstration messages to showcase MQTT pub/sub functionality.
+    
+    **Parameters**:
+    - demo_type: Type of demo (notification, alert, chat, system, update)
+    - message: Content of the demo message
+    
+    **Response**:
+    - success: Boolean indicating if demo was successful
+    - published_topics: List of topics where message was published
+    - cross_system: Information about cross-system broadcasting
+    """
+    try:
+        # Map demo types to topics
+        topic_mapping = {
+            "notification": "demo/notifications",
+            "alert": "demo/alerts", 
+            "chat": "demo/chat",
+            "system": "demo/system",
+            "update": "demo/updates"
+        }
+        
+        topic = topic_mapping.get(demo_type, "demo/notifications")
+        
+        demo_data = {
+            "type": demo_type,
+            "message": message,
+            "demo": True,
+            "timestamp": datetime.now().isoformat(),
+            "id": str(uuid.uuid4())
+        }
+        
+        # Publish to MQTT
+        success = mqtt_manager.publish_message(topic, json.dumps(demo_data))
+        
+        if success:
+            # Also send to other communication systems for comparison
+            cross_system_data = {
+                "type": "mqtt_demo",
+                "demo_type": demo_type,
+                "mqtt_topic": topic,
+                "message": message,
+                "source": "mqtt_demo_api",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            await polling_manager.add_update(cross_system_data)
+            await sse_manager.broadcast_message(cross_system_data, "mqtt_demo")
+            
+            return {
+                "success": True,
+                "published_topics": [topic],
+                "demo_type": demo_type,
+                "message": message,
+                "cross_system": {
+                    "long_polling": True,
+                    "sse": True,
+                    "mqtt": True
+                },
+                "mqtt_message_id": mqtt_manager.message_counter,
+                "timestamp": demo_data["timestamp"]
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to publish demo MQTT message")
+            
+    except Exception as e:
+        logger.error(f"Error sending MQTT demo message: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send MQTT demo message: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(
