@@ -35,8 +35,14 @@ A FastAPI application demonstrating Long Polling communication technique.
 - Custom event types and priorities
 - Connection management and statistics
 
+**MQTT (Message Queuing Telemetry Transport):**
+- Publish-subscribe messaging pattern
+- Quality of Service levels (0, 1, 2)
+- Topic-based message routing
+- Cross-system integration with Long Polling and SSE
+- Message retention and persistent sessions
+
 ### 🚧 Coming Next
-- MQTT integration
 - WebSocket implementation
 - Socket.IO integration
 
@@ -44,6 +50,7 @@ A FastAPI application demonstrating Long Polling communication technique.
 
 **See [LONG_POLLING_DEMO.md](LONG_POLLING_DEMO.md) for Long Polling demo**
 **See [SSE_DEMO.md](SSE_DEMO.md) for Server-Sent Events demo**
+**See [MQTT_DEMO.md](MQTT_DEMO.md) for MQTT messaging demo**
 
 ### Long Polling Test Commands:
 
@@ -74,6 +81,25 @@ curl -X POST "http://localhost:8000/api/v1/sse/trigger?update_type=demo&message=
 curl http://localhost:8000/api/v1/sse/stats
 ```
 
+### MQTT Test Commands:
+
+```bash
+# Publish message to topic
+curl -X POST 'http://localhost:8000/api/v1/mqtt/publish?topic=demo/test&message=Hello%20MQTT&qos=1'
+
+# Send demo notification
+curl -X POST 'http://localhost:8000/api/v1/mqtt/demo?demo_type=notification&message=MQTT%20working'
+
+# Get MQTT statistics
+curl http://localhost:8000/api/v1/mqtt/stats
+
+# View recent messages
+curl 'http://localhost:8000/api/v1/mqtt/messages?limit=5'
+
+# Subscribe to new topic
+curl -X POST 'http://localhost:8000/api/v1/mqtt/subscribe?topic=custom/topic&qos=1'
+```
+
 ## 🏗 Architecture
 
 ### Long Polling Flow:
@@ -90,9 +116,27 @@ Client ──► EventSource ──► Persistent HTTP stream ──► Real-tim
    └──────── Single connection, multiple events ──────────┘
 ```
 
+### MQTT Flow:
+```
+Publisher ──► MQTT Broker ──► Subscribers
+    │              │              │
+    └── Topics ──── Routing ──── Delivery
+```
+
+### Cross-System Integration:
+```
+Background Updates ──► Long Polling ──► Waiting Clients
+                  │
+                  ├──► SSE ──────────► Connected Streams  
+                  │
+                  └──► MQTT ─────────► Topic Subscribers
+```
+
 ## 🔧 Configuration
 
-- **Timeout**: 1-60 seconds (default: 30)
-- **Background Updates**: Every 5-15 seconds
-- **Update History**: Last 50 updates kept
+- **Long Polling**: 1-60 seconds timeout (default: 30)
+- **SSE**: Automatic reconnection, heartbeat every 30 seconds
+- **MQTT**: QoS levels 0-2, message retention, persistent sessions
+- **Background Updates**: Every 5-15 seconds across all systems
+- **Update History**: Last 50-100 messages kept
 - **CORS**: Enabled for browser testing
