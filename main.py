@@ -3,7 +3,7 @@ FastAPI Communication Techniques Demo
 Demonstrates: Long Polling, SSE, MQTT, WebSocket, Socket.IO
 """
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
@@ -532,6 +532,382 @@ class MQTTManager:
 # Initialize MQTT manager
 mqtt_manager = MQTTManager()
 
+# WebSocket Manager for bidirectional real-time communication
+class WebSocketManager:
+    def __init__(self):
+        self.active_connections = {}
+        self.rooms = {}  # Room-based connections
+        self.message_counter = 0
+        self.connection_counter = 0
+    
+    async def connect(self, websocket: WebSocket, client_id: str = None, room: str = "general"):
+        """Accept and manage WebSocket connection"""
+        try:
+            await websocket.accept()
+            
+            if client_id is None:
+                client_id = f"client_{self.connection_counter}"
+                self.connection_counter += 1
+            
+            # Store connection info
+            connection_info = {
+                "websocket": websocket,
+                "client_id": client_id,
+                "room": room,
+                "connected_at": time.time(),
+                "last_ping": time.time(),
+                "messages_sent": 0,
+                "messages_received": 0
+            }
+            
+            self.active_connections[client_id] = connection_info
+            
+            # Add to room
+            if room not in self.rooms:
+                self.rooms[room] = set()
+            self.rooms[room].add(client_id)
+            
+            logger.info(f"🔌 WebSocket connected: {client_id} in room '{room}'")
+            
+            # Send welcome message
+            await self.send_personal_message({
+                "type": "connection",
+                "message": f"Connected as {client_id}",
+                "room": room,
+                "timestamp": datetime.now().isoformat()
+            }, client_id)
+            
+            # Notify room about new connection
+            await self.broadcast_to_room({
+                "type": "user_joined",
+                "user": client_id,
+                "room": room,
+                "timestamp": datetime.now().isoformat(),
+                "total_connections": len(self.active_connections)
+            }, room, exclude=client_id)
+            
+            return client_id
+            
+        except Exception as e:
+            logger.error(f"Error connecting WebSocket: {str(e)}")
+            return None
+    
+    def disconnect(self, client_id: str):
+        """Remove WebSocket connection"""
+        try:
+            if client_id in self.active_connections:
+                connection_info = self.active_connections[client_id]
+                room = connection_info["room"]
+                
+                # Remove from room
+                if room in self.rooms and client_id in self.rooms[room]:
+                    self.rooms[room].remove(client_id)
+                    
+                    # Clean up empty rooms
+                    if not self.rooms[room]:
+                        del self.rooms[room]
+                
+                # Remove connection
+                del self.active_connections[client_id]
+                
+                logger.info(f"🔌 WebSocket disconnected: {client_id} from room '{room}'")
+                
+                # Notify room about disconnection (best effort)
+                asyncio.create_task(self.broadcast_to_room({
+                    "type": "user_left",
+                    "user": client_id,
+                    "room": room,
+                    "timestamp": datetime.now().isoformat(),
+                    "total_connections": len(self.active_connections)
+                }, room))
+                
+        except Exception as e:
+            logger.error(f"Error disconnecting WebSocket {client_id}: {str(e)}")
+    
+    async def send_personal_message(self, message: Dict[Any, Any], client_id: str):
+        """Send message to specific client"""
+        try:
+            if client_id in self.active_connections:
+                connection_info = self.active_connections[client_id]
+                websocket = connection_info["websocket"]
+                
+                self.message_counter += 1
+                formatted_message = {
+                    "id": self.message_counter,
+                    "data": message,
+                    "timestamp": datetime.now().isoformat(),
+                    "recipient": client_id
+                }
+                
+                await websocket.send_text(json.dumps(formatted_message))
+                connection_info["messages_sent"] += 1
+                
+                logger.info(f"📤 WebSocket message sent to {client_id}: {message.get('type', 'unknown')}")
+                return True
+            else:
+                logger.warning(f"⚠️ Client {client_id} not connected")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending WebSocket message to {client_id}: {str(e)}")
+            # Remove broken connection
+            self.disconnect(client_id)
+            return False
+    
+    async def broadcast_to_room(self, message: Dict[Any, Any], room: str, exclude: str = None):
+        """Broadcast message to all clients in a room"""
+        try:
+            if room not in self.rooms:
+                logger.warning(f"⚠️ Room '{room}' does not exist")
+                return 0
+            
+            clients_in_room = self.rooms[room].copy()
+            if exclude:
+                clients_in_room.discard(exclude)
+            
+            sent_count = 0
+            failed_clients = []
+            
+            for client_id in clients_in_room:
+                success = await self.send_personal_message(message, client_id)
+                if success:
+                    sent_count += 1
+                else:
+                    failed_clients.append(client_id)
+            
+            # Clean up failed connections
+            for failed_client in failed_clients:
+                self.disconnect(failed_client)
+            
+            logger.info(f"📡 WebSocket broadcast to room '{room}': {sent_count} clients")
+            return sent_count
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting to room {room}: {str(e)}")
+            return 0
+    
+    async def broadcast_to_all(self, message: Dict[Any, Any]):
+        """Broadcast message to all connected clients"""
+        try:
+            all_clients = list(self.active_connections.keys())
+            sent_count = 0
+            failed_clients = []
+            
+            for client_id in all_clients:
+                success = await self.send_personal_message(message, client_id)
+                if success:
+                    sent_count += 1
+                else:
+                    failed_clients.append(client_id)
+            
+            # Clean up failed connections
+            for failed_client in failed_clients:
+                self.disconnect(failed_client)
+            
+            logger.info(f"📡 WebSocket broadcast to all: {sent_count} clients")
+            return sent_count
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting to all WebSocket clients: {str(e)}")
+            return 0
+    
+    async def handle_client_message(self, client_id: str, message: str):
+        """Process incoming message from client"""
+        try:
+            if client_id not in self.active_connections:
+                return False
+            
+            connection_info = self.active_connections[client_id]
+            connection_info["messages_received"] += 1
+            connection_info["last_ping"] = time.time()
+            
+            # Parse message
+            try:
+                parsed_message = json.loads(message)
+            except json.JSONDecodeError:
+                # Treat as plain text message
+                parsed_message = {
+                    "type": "text",
+                    "content": message
+                }
+            
+            # Add metadata
+            parsed_message["from"] = client_id
+            parsed_message["room"] = connection_info["room"]
+            parsed_message["timestamp"] = datetime.now().isoformat()
+            
+            logger.info(f"📥 WebSocket message from {client_id}: {parsed_message.get('type', 'unknown')}")
+            
+            # Handle different message types
+            message_type = parsed_message.get("type", "text")
+            
+            if message_type == "ping":
+                # Respond with pong
+                await self.send_personal_message({
+                    "type": "pong",
+                    "timestamp": datetime.now().isoformat()
+                }, client_id)
+                
+            elif message_type == "join_room":
+                # Change room
+                new_room = parsed_message.get("room", "general")
+                await self.change_room(client_id, new_room)
+                
+            elif message_type == "broadcast":
+                # Broadcast to room
+                broadcast_data = {
+                    "type": "broadcast",
+                    "content": parsed_message.get("content", ""),
+                    "from": client_id,
+                    "timestamp": datetime.now().isoformat()
+                }
+                await self.broadcast_to_room(broadcast_data, connection_info["room"], exclude=client_id)
+                
+                # Also forward to other communication systems for cross-system demo
+                await self._forward_to_other_systems(broadcast_data)
+                
+            else:
+                # Default: broadcast as chat message
+                chat_data = {
+                    "type": "chat",
+                    "content": parsed_message.get("content", message),
+                    "from": client_id,
+                    "room": connection_info["room"],
+                    "timestamp": datetime.now().isoformat()
+                }
+                await self.broadcast_to_room(chat_data, connection_info["room"], exclude=client_id)
+                
+                # Forward to other systems
+                await self._forward_to_other_systems(chat_data)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error handling WebSocket message from {client_id}: {str(e)}")
+            return False
+    
+    async def change_room(self, client_id: str, new_room: str):
+        """Move client to different room"""
+        try:
+            if client_id not in self.active_connections:
+                return False
+            
+            connection_info = self.active_connections[client_id]
+            old_room = connection_info["room"]
+            
+            if old_room == new_room:
+                return True
+            
+            # Remove from old room
+            if old_room in self.rooms and client_id in self.rooms[old_room]:
+                self.rooms[old_room].remove(client_id)
+                
+                # Notify old room
+                await self.broadcast_to_room({
+                    "type": "user_left",
+                    "user": client_id,
+                    "room": old_room,
+                    "moved_to": new_room,
+                    "timestamp": datetime.now().isoformat()
+                }, old_room)
+                
+                # Clean up empty room
+                if not self.rooms[old_room]:
+                    del self.rooms[old_room]
+            
+            # Add to new room
+            if new_room not in self.rooms:
+                self.rooms[new_room] = set()
+            self.rooms[new_room].add(client_id)
+            connection_info["room"] = new_room
+            
+            # Notify client
+            await self.send_personal_message({
+                "type": "room_changed",
+                "old_room": old_room,
+                "new_room": new_room,
+                "timestamp": datetime.now().isoformat()
+            }, client_id)
+            
+            # Notify new room
+            await self.broadcast_to_room({
+                "type": "user_joined",
+                "user": client_id,
+                "room": new_room,
+                "moved_from": old_room,
+                "timestamp": datetime.now().isoformat()
+            }, new_room, exclude=client_id)
+            
+            logger.info(f"🏠 Client {client_id} moved from '{old_room}' to '{new_room}'")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error changing room for {client_id}: {str(e)}")
+            return False
+    
+    async def _forward_to_other_systems(self, websocket_message):
+        """Forward WebSocket messages to other communication systems for demonstration"""
+        try:
+            forward_data = {
+                "type": "websocket_message",
+                "websocket_type": websocket_message.get("type", "unknown"),
+                "content": websocket_message.get("content", ""),
+                "from": websocket_message.get("from", "unknown"),
+                "room": websocket_message.get("room", "general"),
+                "source": "websocket",
+                "timestamp": websocket_message.get("timestamp", datetime.now().isoformat())
+            }
+            
+            # Send to Long Polling
+            await polling_manager.add_update(forward_data)
+            
+            # Send to SSE
+            await sse_manager.broadcast_message(forward_data, "websocket_message")
+            
+            # Send to MQTT
+            mqtt_topic = f"websocket/{websocket_message.get('room', 'general')}"
+            mqtt_payload = json.dumps(forward_data)
+            mqtt_manager.publish_message(mqtt_topic, mqtt_payload)
+            
+        except Exception as e:
+            logger.error(f"Error forwarding WebSocket message: {str(e)}")
+    
+    def get_stats(self):
+        """Get WebSocket statistics"""
+        try:
+            room_stats = {}
+            for room, clients in self.rooms.items():
+                room_stats[room] = {
+                    "client_count": len(clients),
+                    "clients": list(clients)
+                }
+            
+            connection_stats = {}
+            for client_id, info in self.active_connections.items():
+                connection_stats[client_id] = {
+                    "room": info["room"],
+                    "connected_duration": time.time() - info["connected_at"],
+                    "messages_sent": info["messages_sent"],
+                    "messages_received": info["messages_received"],
+                    "last_activity": time.time() - info["last_ping"]
+                }
+            
+            return {
+                "total_connections": len(self.active_connections),
+                "total_rooms": len(self.rooms),
+                "message_counter": self.message_counter,
+                "connection_counter": self.connection_counter,
+                "rooms": room_stats,
+                "connections": connection_stats
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting WebSocket stats: {str(e)}")
+            return {"error": str(e)}
+
+# Initialize WebSocket manager
+websocket_manager = WebSocketManager()
+
 async def simulate_data_updates():
     """Background task to simulate periodic data updates"""
     sample_updates = [
@@ -562,6 +938,14 @@ async def simulate_data_updates():
             mqtt_topic = random.choice(mqtt_topics)
             mqtt_payload = json.dumps(update)
             mqtt_manager.publish_message(mqtt_topic, mqtt_payload)
+            
+            # Send to WebSocket (broadcast to all rooms)
+            await websocket_manager.broadcast_to_all({
+                "type": "background_update",
+                "data": update,
+                "source": "background_task",
+                "timestamp": update["timestamp"]
+            })
             
         except Exception as e:
             logger.error(f"Error in background updates: {str(e)}")
@@ -596,7 +980,8 @@ async def health_check():
             "timestamp": datetime.now().isoformat(),
             "polling_stats": polling_manager.get_stats(),
             "sse_stats": sse_manager.get_stats(),
-            "mqtt_stats": mqtt_manager.get_stats()
+            "mqtt_stats": mqtt_manager.get_stats(),
+            "websocket_stats": websocket_manager.get_stats()
         }
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
@@ -1176,6 +1561,294 @@ async def mqtt_demo_message(
     except Exception as e:
         logger.error(f"Error sending MQTT demo message: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to send MQTT demo message: {str(e)}")
+
+# =============== WEBSOCKET ENDPOINTS ===============
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, client_id: str = None, room: str = "general"):
+    """
+    WebSocket Connection Endpoint
+    
+    **Objective**: Establish bidirectional real-time communication using WebSocket protocol.
+    
+    **How it works**:
+    - Client connects via WebSocket protocol (ws:// or wss://)
+    - Full-duplex communication: both client and server can send messages anytime
+    - Room-based messaging for organized communication
+    - Automatic connection management and cleanup
+    
+    **Parameters**:
+    - client_id: Optional unique identifier for the client
+    - room: Room name to join (default: "general")
+    
+    **Features**:
+    - Real-time bidirectional messaging
+    - Room-based chat and broadcasts
+    - Cross-system message forwarding
+    - Connection state management
+    - Ping/pong heartbeat support
+    """
+    connection_id = await websocket_manager.connect(websocket, client_id, room)
+    
+    if connection_id is None:
+        return
+    
+    try:
+        while True:
+            # Wait for messages from client
+            data = await websocket.receive_text()
+            
+            # Process the message
+            await websocket_manager.handle_client_message(connection_id, data)
+            
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(connection_id)
+        logger.info(f"🔌 WebSocket client {connection_id} disconnected normally")
+    except Exception as e:
+        logger.error(f"🔌 WebSocket error for client {connection_id}: {str(e)}")
+        websocket_manager.disconnect(connection_id)
+
+@app.get("/api/v1/websocket/stats")
+async def get_websocket_stats():
+    """
+    Get WebSocket Statistics
+    
+    **Objective**: Monitor WebSocket system performance, connections, and activity.
+    
+    **Response**:
+    - total_connections: Number of active WebSocket connections
+    - total_rooms: Number of active rooms
+    - message_counter: Total messages processed
+    - rooms: Detailed information about each room
+    - connections: Connection details for each client
+    """
+    try:
+        stats = websocket_manager.get_stats()
+        return {
+            "success": True,
+            "stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting WebSocket stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get WebSocket stats: {str(e)}")
+
+@app.post("/api/v1/websocket/broadcast")
+async def websocket_broadcast(
+    message: str = Query(..., description="Message to broadcast"),
+    room: str = Query("general", description="Room to broadcast to (or 'all' for all rooms)"),
+    message_type: str = Query("announcement", description="Type of message")
+):
+    """
+    Broadcast Message via WebSocket
+    
+    **Objective**: Send real-time messages to WebSocket clients in specific rooms or all rooms.
+    
+    **Parameters**:
+    - message: The message content to broadcast
+    - room: Target room name, or "all" to broadcast to all connected clients
+    - message_type: Type of message (announcement, alert, notification, etc.)
+    
+    **Response**:
+    - success: Boolean indicating if broadcast was successful
+    - clients_reached: Number of clients that received the message
+    - rooms_targeted: List of rooms where message was sent
+    """
+    try:
+        broadcast_data = {
+            "type": message_type,
+            "content": message,
+            "from": "api",
+            "timestamp": datetime.now().isoformat(),
+            "broadcast": True
+        }
+        
+        if room.lower() == "all":
+            clients_reached = await websocket_manager.broadcast_to_all(broadcast_data)
+            rooms_targeted = list(websocket_manager.rooms.keys())
+        else:
+            clients_reached = await websocket_manager.broadcast_to_room(broadcast_data, room)
+            rooms_targeted = [room] if room in websocket_manager.rooms else []
+        
+        # Also forward to other communication systems for cross-system demo
+        forward_data = {
+            "type": "websocket_broadcast",
+            "message_type": message_type,
+            "content": message,
+            "room": room,
+            "source": "websocket_api",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        await polling_manager.add_update(forward_data)
+        await sse_manager.broadcast_message(forward_data, "websocket_broadcast")
+        
+        mqtt_topic = f"websocket/broadcast/{room}" if room != "all" else "websocket/broadcast/all"
+        mqtt_payload = json.dumps(forward_data)
+        mqtt_manager.publish_message(mqtt_topic, mqtt_payload)
+        
+        return {
+            "success": True,
+            "clients_reached": clients_reached,
+            "rooms_targeted": rooms_targeted,
+            "message": message,
+            "message_type": message_type,
+            "cross_system": {
+                "long_polling": True,
+                "sse": True,
+                "mqtt": True,
+                "websocket": True
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error broadcasting WebSocket message: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to broadcast WebSocket message: {str(e)}")
+
+@app.post("/api/v1/websocket/send")
+async def websocket_send_personal(
+    client_id: str = Query(..., description="Target client ID"),
+    message: str = Query(..., description="Message to send"),
+    message_type: str = Query("direct", description="Type of message")
+):
+    """
+    Send Personal Message via WebSocket
+    
+    **Objective**: Send direct messages to specific WebSocket clients.
+    
+    **Parameters**:
+    - client_id: ID of the target client
+    - message: The message content to send
+    - message_type: Type of message (direct, notification, etc.)
+    
+    **Response**:
+    - success: Boolean indicating if message was sent
+    - client_id: Target client ID
+    - delivered: Boolean indicating if client received the message
+    """
+    try:
+        message_data = {
+            "type": message_type,
+            "content": message,
+            "from": "api",
+            "timestamp": datetime.now().isoformat(),
+            "direct": True
+        }
+        
+        delivered = await websocket_manager.send_personal_message(message_data, client_id)
+        
+        return {
+            "success": True,
+            "client_id": client_id,
+            "message": message,
+            "message_type": message_type,
+            "delivered": delivered,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error sending personal WebSocket message: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send personal WebSocket message: {str(e)}")
+
+@app.get("/api/v1/websocket/rooms")
+async def get_websocket_rooms():
+    """
+    Get WebSocket Rooms Information
+    
+    **Objective**: List all active WebSocket rooms and their participants.
+    
+    **Response**:
+    - success: Boolean indicating success
+    - rooms: Dictionary of rooms with client lists
+    - total_rooms: Number of active rooms
+    - total_clients: Total number of connected clients
+    """
+    try:
+        stats = websocket_manager.get_stats()
+        
+        return {
+            "success": True,
+            "rooms": stats.get("rooms", {}),
+            "total_rooms": stats.get("total_rooms", 0),
+            "total_clients": stats.get("total_connections", 0),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting WebSocket rooms: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get WebSocket rooms: {str(e)}")
+
+@app.post("/api/v1/websocket/demo")
+async def websocket_demo_message(
+    demo_type: str = Query("chat", description="Type of demo message"),
+    message: str = Query("WebSocket demo message", description="Demo message content"),
+    room: str = Query("general", description="Target room for demo")
+):
+    """
+    Send Demo WebSocket Message
+    
+    **Objective**: Send demonstration messages to showcase WebSocket real-time functionality.
+    
+    **Parameters**:
+    - demo_type: Type of demo (chat, notification, alert, system, announcement)
+    - message: Content of the demo message
+    - room: Target room for the demo message
+    
+    **Response**:
+    - success: Boolean indicating if demo was successful
+    - clients_reached: Number of clients that received the message
+    - cross_system: Information about cross-system broadcasting
+    """
+    try:
+        demo_data = {
+            "type": demo_type,
+            "content": message,
+            "from": "demo_api",
+            "room": room,
+            "demo": True,
+            "timestamp": datetime.now().isoformat(),
+            "id": str(uuid.uuid4())
+        }
+        
+        # Send via WebSocket
+        clients_reached = await websocket_manager.broadcast_to_room(demo_data, room)
+        
+        # Also send to other communication systems for comparison
+        cross_system_data = {
+            "type": "websocket_demo",
+            "demo_type": demo_type,
+            "content": message,
+            "room": room,
+            "source": "websocket_demo_api",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        await polling_manager.add_update(cross_system_data)
+        await sse_manager.broadcast_message(cross_system_data, "websocket_demo")
+        
+        mqtt_topic = f"websocket/demo/{room}"
+        mqtt_payload = json.dumps(cross_system_data)
+        mqtt_manager.publish_message(mqtt_topic, mqtt_payload)
+        
+        return {
+            "success": True,
+            "clients_reached": clients_reached,
+            "room": room,
+            "demo_type": demo_type,
+            "message": message,
+            "cross_system": {
+                "long_polling": True,
+                "sse": True,
+                "mqtt": True,
+                "websocket": True
+            },
+            "websocket_message_id": websocket_manager.message_counter,
+            "timestamp": demo_data["timestamp"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error sending WebSocket demo message: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send WebSocket demo message: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(
